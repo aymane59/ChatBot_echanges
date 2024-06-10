@@ -52,6 +52,10 @@ def store_token_in_db(access_token):
     db.session.commit()
     return new_token.id
 
+def delete_token_from_db(access_token):
+    SessionToken.query.filter_by(access_token=access_token).delete()
+    db.session.commit()
+
 @socketio.on('ask')
 def handle_ask(data):
     api_key = data.get('API_KEY')
@@ -71,6 +75,13 @@ def handle_ask(data):
     # Utiliser `sid` pour obtenir l'ID de session dans le contexte SocketIO
     rabbitmq_handler.send_result({'socket_id': request.sid, 'access_token': access_token, 'question': question})
     emit('status', {'status': 'queued', 'token_id': token_id})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    access_token = session.get('access_token')
+    if access_token:
+        delete_token_from_db(access_token)
+        print(f"Deleted access token: {access_token}")
 
 def post_to_queue(question, access_token):
     print(f"Question mise en file d'attente : {question} avec le token : {access_token}")
