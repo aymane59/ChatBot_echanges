@@ -1,5 +1,5 @@
-from flask import Flask, session, request
-from flask_socketio import SocketIO, emit
+from flask import Flask, session, request, jsonify
+from flask_socketio import SocketIO, emit, disconnect
 from flask_sqlalchemy import SQLAlchemy
 from flask_session import Session
 import os
@@ -39,12 +39,15 @@ Session(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 rabbitmq_handler = RabbitMQHandler(socketio)
 
+
 def validate_api_key(api_key):
     valid_api_keys = ["example_valid_key"]
     return api_key in valid_api_keys
 
+
 def generate_access_token():
     return os.urandom(24).hex()
+
 
 def store_token_in_db(access_token):
     new_token = SessionToken(access_token=access_token)
@@ -52,9 +55,30 @@ def store_token_in_db(access_token):
     db.session.commit()
     return new_token.id
 
+
 def delete_token_from_db(access_token):
     SessionToken.query.filter_by(access_token=access_token).delete()
     db.session.commit()
+
+
+@app.route('/api/request-token', methods=['POST'])
+def request_token():
+    data = request.json
+    api_key = data.get('API_KEY')
+
+    if not api_key:
+        return jsonify({'error': 'API_KEY is required'}), 400
+
+    if not validate_api_key(api_key):
+        return jsonify({'error': 'Invalid API_KEY'}), 401
+
+    access_token = generate_access_token()
+    token_id = store_token_in_db(access_token)
+    session['access_token'] = access_token
+    session['token_id'] = token_id
+    return jsonify({'access_token': access_token}), 200
+
+
 
 @socketio.on('ask')
 def handle_ask(data):
@@ -63,10 +87,14 @@ def handle_ask(data):
         emit('error', {'error': 'Invalid API_KEY'})
         return
 
-    access_token = generate_access_token()
-    token_id = store_token_in_db(access_token)
-    session['access_token'] = access_token
-    session['token_id'] = token_id
+    access_token = data.get('access_token')
+    token_id = session.get('token_id')
+
+    if not access_token or not token_id:
+        access_token = generate_access_token()
+        token_id = store_token_in_db(access_token)
+        session['access_token'] = access_token
+        session['token_id'] = token_id
 
     question = data.get('question')
     print(f"Received question: {question}")
@@ -76,6 +104,7 @@ def handle_ask(data):
     rabbitmq_handler.send_result({'socket_id': request.sid, 'access_token': access_token, 'question': question})
     emit('status', {'status': 'queued', 'token_id': token_id})
 
+
 @socketio.on('disconnect')
 def handle_disconnect():
     access_token = session.get('access_token')
@@ -83,8 +112,20 @@ def handle_disconnect():
         delete_token_from_db(access_token)
         print(f"Deleted access token: {access_token}")
 
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    with app.app_context():
+        access_token = session.get('access_token')
+        if access_token:
+            delete_token_from_db(access_token)
+            print(f"Deleted access token: {access_token}")
+
+
+
 def post_to_queue(question, access_token):
     print(f"Question mise en file d'attente : {question} avec le token : {access_token}")
+
 
 if __name__ == '__main__':
     with app.app_context():
