@@ -1,3 +1,4 @@
+import time
 import socketio
 
 sio = socketio.Client(ssl_verify=False) # a changer une fois le certificat valable
@@ -28,4 +29,6 @@ def disconnect():
 
 # Utilisation d'une connexion WebSocket avec désactivation de la vérification SSL
 sio.connect('https://localhost:5000', transports=['websocket'])
+time.sleep(5)  # Attendre 5 secondes pour simuler l'activité
+sio.disconnect()
 sio.wait()
