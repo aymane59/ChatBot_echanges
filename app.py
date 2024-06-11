@@ -61,6 +61,11 @@ def delete_token_from_db(access_token):
     db.session.commit()
 
 
+def is_valid_access_token(access_token):
+    token = SessionToken.query.filter_by(access_token=access_token).first()
+    return token is not None
+
+
 @app.route('/api/request-token', methods=['POST'])
 def request_token():
     data = request.json
@@ -77,6 +82,28 @@ def request_token():
     session['access_token'] = access_token
     session['token_id'] = token_id
     return jsonify({'access_token': access_token}), 200
+
+
+@app.route('/api/socket/send_question', methods=['POST'])
+def send_question():
+    data = request.json
+    access_token = data.get('access_token')
+    question = data.get('question')
+    socket_id = data.get('socket_id')
+
+    if not access_token or not question or not socket_id:
+        return jsonify({'status': 'error', 'message': 'access_token, question, and socket_id are required'}), 400
+
+    if is_valid_access_token(access_token):
+        # Access token est valide
+        print(f"Access token valid. Sending question: {question}")
+        # Envoyer la question à la queue pour traitement
+        rabbitmq_handler.send_result({'socket_id': socket_id, 'access_token': access_token, 'question': question})
+        return jsonify({'status': 'loading', 'question': question}), 200
+    else:
+        # Access token invalide
+        print(f"Access token invalid. Question: {question} not sent.")
+        return jsonify({'status': 'invalid_token', 'question': question}), 401
 
 
 @socketio.on('ask')

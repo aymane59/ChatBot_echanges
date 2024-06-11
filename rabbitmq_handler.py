@@ -41,12 +41,15 @@ def callback(socketio, ch, method, properties, body):
     try:
         json_body = json.loads(body)
         print(f" [x] Received {json_body}")
-        socket_id = json_body['socket_id']
-        question = json_body['question']
-        print(f" [x] Sending question to socket {socket_id}: {question}")
-        # Envoyer le message au client via Socket.IO
-        socketio.emit('response', {'socket_id': socket_id, 'question': question}, room=socket_id)
-        ##########################################################################################"
+        socket_id = json_body.get('socket_id')
+        question = json_body.get('question')
+        answer = json_body.get('answer')
+        if socket_id and question:
+            print(f" [x] Sending question to socket {socket_id}: {question}")
+            socketio.emit('response', {'socket_id': socket_id, 'question': question}, room=socket_id)
+        elif socket_id and answer:
+            print(f" [x] Sending answer to socket {socket_id}: {answer}")
+            socketio.emit('response', {'socket_id': socket_id, 'answer': answer}, room=socket_id)
     except Exception as e:
         print('Erreur lors de la réception du message:', str(e))
 
