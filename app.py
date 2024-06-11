@@ -7,7 +7,7 @@ import ssl
 from config import Config
 from models import db, SessionToken
 from flask_talisman import Talisman
-from rabbitmq_handler import RabbitMQHandler
+from rabbitmq_handler import RabbitMQHandler, QUEUE_INPUT, QUEUE_OUTPUT
 
 app = Flask(__name__)
 # Configure Talisman for security headers
@@ -39,15 +39,12 @@ Session(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 rabbitmq_handler = RabbitMQHandler(socketio)
 
-
 def validate_api_key(api_key):
     valid_api_keys = ["example_valid_key"]
     return api_key in valid_api_keys
 
-
 def generate_access_token():
     return os.urandom(24).hex()
-
 
 def store_token_in_db(access_token):
     new_token = SessionToken(access_token=access_token)
@@ -55,16 +52,13 @@ def store_token_in_db(access_token):
     db.session.commit()
     return new_token.id
 
-
 def delete_token_from_db(access_token):
     SessionToken.query.filter_by(access_token=access_token).delete()
     db.session.commit()
 
-
 def is_valid_access_token(access_token):
     token = SessionToken.query.filter_by(access_token=access_token).first()
     return token is not None
-
 
 @app.route('/api/request-token', methods=['POST'])
 def request_token():
@@ -83,7 +77,6 @@ def request_token():
     session['token_id'] = token_id
     return jsonify({'access_token': access_token}), 200
 
-
 @app.route('/api/socket/send_question', methods=['POST'])
 def send_question():
     data = request.json
@@ -98,13 +91,32 @@ def send_question():
         # Access token est valide
         print(f"Access token valid. Sending question: {question}")
         # Envoyer la question à la queue pour traitement
-        rabbitmq_handler.send_result({'socket_id': socket_id, 'access_token': access_token, 'question': question})
+        rabbitmq_handler.send_to_queue(QUEUE_INPUT, {'socket_id': socket_id, 'access_token': access_token, 'question': question})
         return jsonify({'status': 'loading', 'question': question}), 200
     else:
         # Access token invalide
         print(f"Access token invalid. Question: {question} not sent.")
         return jsonify({'status': 'invalid_token', 'question': question}), 401
 
+@app.route('/api/socket/process_queue', methods=['POST'])
+def process_queue():
+    try:
+        print("Processing queue...")
+        responses = rabbitmq_handler.process_queue()
+        return jsonify(responses), 200
+    except Exception as e:
+        print(f"Failed to process queue: {str(e)}")
+        return jsonify({'status': 'error', 'message': 'Failed to process queue', 'error': str(e)}), 500
+
+@app.route('/api/socket/return_answer', methods=['POST'])
+def return_answer():
+    try:
+        print("Processing responses...")
+        responses = rabbitmq_handler.process_responses()
+        return jsonify(responses), 200
+    except Exception as e:
+        print(f"Failed to process responses: {str(e)}")
+        return jsonify({'status': 'error', 'message': 'Failed to process responses', 'error': str(e)}), 500
 
 @socketio.on('ask')
 def handle_ask(data):
@@ -127,9 +139,8 @@ def handle_ask(data):
     print(f"Generated access token: {access_token} with ID: {token_id}")
 
     # Utiliser `sid` pour obtenir l'ID de session dans le contexte SocketIO
-    rabbitmq_handler.send_result({'socket_id': request.sid, 'access_token': access_token, 'question': question})
+    rabbitmq_handler.send_to_queue(QUEUE_INPUT, {'socket_id': request.sid, 'access_token': access_token, 'question': question})
     emit('status', {'status': 'queued', 'token_id': token_id})
-
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -139,10 +150,8 @@ def handle_disconnect():
             delete_token_from_db(access_token)
             print(f"Deleted access token: {access_token}")
 
-
 def post_to_queue(question, access_token):
     print(f"Question mise en file d'attente : {question} avec le token : {access_token}")
-
 
 if __name__ == '__main__':
     with app.app_context():

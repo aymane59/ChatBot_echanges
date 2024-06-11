@@ -1,14 +1,15 @@
 import threading
 import pika
 import json
+import random
 from time import sleep
 from flask_socketio import SocketIO
-
 from exceptions import *
 
 QUEUE_INPUT = 'queue_input'
 QUEUE_OUTPUT = 'queue_output'
 CONNEXION_URI = 'localhost'
+
 
 def get_rabbitmq_handle(connection_string, max_retries=3):
     try:
@@ -24,6 +25,7 @@ def get_rabbitmq_handle(connection_string, max_retries=3):
         else:
             raise MaxAttemptsExceededError('Nombre maximal de tentatives de connexion atteint')
 
+
 def close_rabbitmq_handle(channel, connection, max_retries=3):
     try:
         channel.close()
@@ -37,27 +39,52 @@ def close_rabbitmq_handle(channel, connection, max_retries=3):
         else:
             raise MaxAttemptsExceededError('Nombre maximal de tentatives de connexion atteint')
 
-def callback(socketio, ch, method, properties, body):
+
+def process_question(rabbitmq_handler, question_data):
+    # Simuler le traitement de l'IA
+    status = random.choice(['SUCCESS', 'REFUSED', 'ERROR'])
+    question = question_data.get('question')
+    socket_id = question_data.get('socket_id')
+
+    # Créer la réponse
+    response = {
+        'status': status,
+        'answer': f"Answer to '{question}'",
+        'socket_id': socket_id
+    }
+
+    # Envoyer la réponse dans la queue de sortie
+    rabbitmq_handler.send_result(response)
+
+    return response
+
+
+def callback(rabbitmq_handler, ch, method, properties, body):
     try:
         json_body = json.loads(body)
         print(f" [x] Received {json_body}")
-        socket_id = json_body.get('socket_id')
-        question = json_body.get('question')
-        answer = json_body.get('answer')
-        if socket_id and question:
-            print(f" [x] Sending question to socket {socket_id}: {question}")
-            socketio.emit('response', {'socket_id': socket_id, 'question': question}, room=socket_id)
-        elif socket_id and answer:
-            print(f" [x] Sending answer to socket {socket_id}: {answer}")
-            socketio.emit('response', {'socket_id': socket_id, 'answer': answer}, room=socket_id)
+        process_question(rabbitmq_handler, json_body)
     except Exception as e:
         print('Erreur lors de la réception du message:', str(e))
 
-def output_consumer(socketio):
+
+def output_consumer(rabbitmq_handler):
     channel2, connection2 = get_rabbitmq_handle(connection_string=CONNEXION_URI)
-    channel2.basic_consume(queue=QUEUE_OUTPUT, auto_ack=True, on_message_callback=lambda ch, method, properties, body: callback(socketio, ch, method, properties, body))
-    print('Waiting for messages...')
+    channel2.basic_consume(queue=QUEUE_OUTPUT, auto_ack=True,
+                           on_message_callback=lambda ch, method, properties, body: callback_output(rabbitmq_handler, ch, method, properties, body))
+    print('Waiting for responses...')
     channel2.start_consuming()
+
+
+def callback_output(rabbitmq_handler, ch, method, properties, body):
+    try:
+        json_body = json.loads(body)
+        print(f" [x] Processed response {json_body}")
+        rabbitmq_handler.send_to_client(json_body)
+        return json_body
+    except Exception as e:
+        print('Erreur lors de la réception du message:', str(e))
+
 
 class RabbitMQHandler:
 
@@ -76,16 +103,25 @@ class RabbitMQHandler:
             self.channel.queue_declare(queue=QUEUE_INPUT, durable=False)
             self.channel.queue_declare(queue=QUEUE_OUTPUT, durable=False)
             print('Initialisation de la queue de messages')
+            self.purge_queues()
         except Exception as e:
             print('Erreur lors de l\'initialisation de la queue de messages:', str(e))
             exit(1)
 
         try:
-            self.consumer_thread = threading.Thread(target=output_consumer, args=(self.socketio,))
+            self.consumer_thread = threading.Thread(target=output_consumer, args=(self,))
             self.consumer_thread.start()
         except Exception as e:
             print('Erreur lors de la création du thread de consommation:', str(e))
             exit(1)
+
+    def purge_queues(self):
+        try:
+            self.channel.queue_purge(queue=QUEUE_INPUT)
+            self.channel.queue_purge(queue=QUEUE_OUTPUT)
+            print('Queues purged successfully')
+        except Exception as e:
+            print('Erreur lors de la purge des queues:', str(e))
 
     def send_result(self, body: dict):
         try:
@@ -93,11 +129,49 @@ class RabbitMQHandler:
             self.channel.basic_publish(exchange='',
                                        routing_key=QUEUE_OUTPUT,
                                        body=body_bytes)
+            print(f" [x] Sent response {body}")
         except Exception as e:
             raise SendMessageError(f'Erreur lors de l\'envoi du message: {e}')
 
-    def dispose(self):
-        print('Fermeture de la connexion à RabbitMQ')
-        close_rabbitmq_handle(self.channel, self.connection)
-        self.consumer_thread.join()
-        print('Thread de consommation fermé')
+    def send_to_queue(self, queue, body: dict):
+        try:
+            body_bytes = json.dumps(body, default=str).encode('utf-8')
+            self.channel.basic_publish(exchange='',
+                                       routing_key=queue,
+                                       body=body_bytes)
+            print(f" [x] Sent to {queue} {body}")
+        except Exception as e:
+            raise SendMessageError(f'Erreur lors de l\'envoi du message dans la queue {queue}: {e}')
+
+    def send_to_client(self, body: dict):
+        try:
+            socket_id = body['socket_id']
+            self.socketio.emit('response', body, room=socket_id)
+            print(f" [x] Sent to client {body}")
+        except Exception as e:
+            print('Erreur lors de l\'envoi au client:', str(e))
+
+    def process_queue(self):
+        responses = []
+        while True:
+            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_INPUT)
+            if method_frame:
+                self.channel.basic_ack(method_frame.delivery_tag)
+                response = process_question(self, json.loads(body))
+                responses.append(response)
+                sleep(2)  # Attente artificielle pour simuler le traitement
+            else:
+                break
+        return responses
+
+    def process_responses(self):
+        responses = []
+        while True:
+            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_OUTPUT)
+            if method_frame:
+                self.channel.basic_ack(method_frame.delivery_tag)
+                response = callback_output(self, None, method_frame, header_frame, body)
+                responses.append(response)
+            else:
+                break
+        return responses
