@@ -3,6 +3,11 @@ import json
 import socketio
 
 from rabbitmq_handler import RabbitMQHandler
+#import warnings
+#import urllib3
+
+#urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 sio = socketio.Client(ssl_verify=False)
 
@@ -51,6 +56,19 @@ def start_processing_queue():
         print(f"Failed to start processing queue: {response.json()}")
         return None
 
+def start_processing_output_queue():
+    response = requests.post(
+        f"{BASE_URL}/api/process_output_queue",
+        headers=HEADERS,
+        data=json.dumps({}),
+        verify=False
+    )
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Failed to start processing output queue: {response.json()}")
+        return None
+
 def send_question(access_token, question):
     sio.emit('send_question', {'access_token': access_token, 'question': question})
 
@@ -66,6 +84,7 @@ def connect():
         send_question(access_token, question='how to secure a windows system ?')
         start_processing_queue()
         print_queue('queue_input')
+        start_processing_output_queue()
         print_queue('queue_output')
     else:
         print('Could not get access token. Disconnecting...')
@@ -74,6 +93,10 @@ def connect():
 @sio.event
 def sending_question_status(data):
     print(f"Received sending question status: {data}")
+
+@sio.event
+def response(data):
+    print(f"Received response: {data}")
 
 @sio.event
 def disconnect():

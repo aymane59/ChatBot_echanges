@@ -105,6 +105,17 @@ def process_queue():
     return jsonify({'status': 'processing_started'}), 200
 
 
+@app.route('/api/process_output_queue', methods=['POST'])
+def process_output_queue():
+    messages = rabbitmq_handler.consume_output_queue()
+    for message in messages:
+        socket_id = message.get('socket_id')
+        status = message.get('status')
+        answer = message.get('answer')
+        socketio.emit('response', {'status': status, 'answer': answer}, to=socket_id)
+    return jsonify({'status': 'output_processing_started'}), 200
+
+
 @socketio.on('send_question')
 def handle_send_question(data):
     access_token = data.get('access_token')
@@ -123,27 +134,6 @@ def handle_send_question(data):
         print(f"Access token invalid. Question: {question} not sent.")
         emit('sending_question_status', {'status': 'invalid_token', 'question': question}, to=socket_id)
 
-
-@socketio.on('ask')
-def handle_ask(data):
-    api_key = data.get('API_KEY')
-    if not validate_api_key(api_key):
-        emit('error', {'error': 'Invalid API_KEY'})
-        return
-
-    access_token = session.get('access_token')
-    token_id = session.get('token_id')
-
-    if not access_token or not token_id:
-        access_token = generate_access_token()
-        token_id = store_token_in_db(access_token)
-        session['access_token'] = access_token
-        session['token_id'] = token_id
-
-    question = data.get('question')
-    print(f"Received question: {question}")
-
-    emit('status', {'status': 'queued', 'token_id': token_id, 'access_token': access_token})
 
 
 @socketio.on('disconnect')

@@ -104,36 +104,16 @@ class RabbitMQHandler:
                 break
 
     def consume_output_queue(self):
+        messages = []
         while True:
             method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_OUTPUT, auto_ack=True)
             if method_frame:
                 message = json.loads(body)
-                socket_id = message.get('socket_id')
-                answer = message.get('answer')
-                status = message.get('status')
-                print(f"Consuming message from output queue: {message}")
+                messages.append(message)
+            else:
+                break
+        return messages
 
-                if socket_id and answer and status:
-                    response = {
-                        'status': status,
-                        'answer': answer,
-                        'socket_id': socket_id
-                    }
-                    return response
-                else:
-                    print(f"Invalid message format: {message}")
-            else:
-                break
-    def print_queue_content(self, queue_name):
-        messages = []
-        while True:
-            method_frame, header_frame, body = self.channel.basic_get(queue=queue_name, auto_ack=True)
-            if method_frame:
-                messages.append(body.decode('utf-8'))
-            else:
-                break
-        for message in messages:
-            print(f"Message in {queue_name}: {message}")
 
     def dispose(self):
         print('Fermeture de la connexion à RabbitMQ')
