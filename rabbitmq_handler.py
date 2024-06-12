@@ -79,41 +79,55 @@ class RabbitMQHandler:
             print(f'Erreur lors de la purge de la queue {queue_name}: {e}')
 
     def consume_input_queue(self):
-        while True:
-            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_INPUT, auto_ack=True)
-            if method_frame:
-                message = json.loads(body)
-                socket_id = message.get('socket_id')
-                access_token = message.get('access_token')
-                question = message.get('question')
-                print(f"Consuming message: {message}")
+        def callback(ch, method, properties, body):
+            data = json.loads(body)
+            socket_id = data.get('socket_id')
+            access_token = data.get('id')
+            question = data.get('message')
+            print(f"Consuming message: {data}")
 
-                if socket_id and access_token and question:
-                    # Simulate processing the question and generating an answer
-                    answer = f"Processed answer for the question: {question}"
-                    status = random.choice(['SUCCESS', 'REFUSED', 'ERROR'])
-                    response = {
-                        'status': status,
-                        'answer': answer,
-                        'socket_id': socket_id
-                    }
-                    self.send_to_queue(response, QUEUE_OUTPUT)
-                else:
-                    print(f"Invalid message format: {message}")
+            if socket_id and access_token and question:
+                # Simulate processing the question and generating an answer
+                answer = f"Processed answer for the question: {question}"
+                status = random.choice(['success', 'error'])
+                response = {
+                    'status': status,
+                    'message': answer,
+                    'socket_id': socket_id
+                }
+                self.send_to_queue(response, QUEUE_OUTPUT)
             else:
-                break
+                print(f"Invalid message format: {data}")
+
+        self.channel.basic_consume(queue=QUEUE_INPUT, on_message_callback=callback, auto_ack=True)
+        threading.Thread(target=self.channel.start_consuming).start()
 
     def consume_output_queue(self):
+        def callback(ch, method, properties, body):
+            data = json.loads(body)
+            socket_id = data.get('socket_id')
+            answer = data.get('message')
+            status = data.get('status')
+            print(f"Consuming message from output queue: {data}")
+
+            if socket_id and answer and status:
+                self.socketio.emit('response', {'status': status, 'message': answer}, room=socket_id)
+            else:
+                print(f"Invalid message format: {data}")
+
+        self.channel.basic_consume(queue=QUEUE_OUTPUT, on_message_callback=callback, auto_ack=True)
+        threading.Thread(target=self.channel.start_consuming).start()
+
+    def print_queue_content(self, queue_name):
         messages = []
         while True:
-            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_OUTPUT, auto_ack=True)
+            method_frame, header_frame, body = self.channel.basic_get(queue=queue_name, auto_ack=True)
             if method_frame:
-                message = json.loads(body)
-                messages.append(message)
+                messages.append(body.decode('utf-8'))
             else:
                 break
-        return messages
-
+        for message in messages:
+            print(f"Message in {queue_name}: {message}")
 
     def dispose(self):
         print('Fermeture de la connexion à RabbitMQ')

@@ -1,17 +1,16 @@
+import warnings
+import urllib3
+warnings.simplefilter('ignore', urllib3.exceptions.InsecureRequestWarning)
+
 import requests
 import json
 import socketio
 
 from rabbitmq_handler import RabbitMQHandler
-#import warnings
-#import urllib3
-
-#urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 
 sio = socketio.Client(ssl_verify=False)
 
-API_KEY = "example_valid_key"
+API_KEY = "UwHtq7SkGS51u9DvKEAGM6e2E2izoCYTrgBeVNql1rpsWyfRkxSGx44q7C6YEdiiyOPR4HwFT8N9D0h7eq4HfhRx0x0LlvhP3Ps1B9ra7EfWwYUy8DkWOFwusZQFbIv2"
 BASE_URL = "https://localhost:5000"
 HEADERS = {'Content-Type': 'application/json'}
 
@@ -19,7 +18,7 @@ rabbitmq_handler = RabbitMQHandler()
 
 def get_access_token(api_key):
     response = requests.post(
-        f"{BASE_URL}/api/request-token",
+        f"{BASE_URL}/api/request_token",
         headers=HEADERS,
         data=json.dumps({"API_KEY": api_key}),
         verify=False
@@ -43,34 +42,8 @@ def print_queue(queue_name):
         print(f"Failed to get messages: {response.json()}")
         return None
 
-def start_processing_queue():
-    response = requests.post(
-        f"{BASE_URL}/api/process_queue",
-        headers=HEADERS,
-        data=json.dumps({}),
-        verify=False
-    )
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to start processing queue: {response.json()}")
-        return None
-
-def start_processing_output_queue():
-    response = requests.post(
-        f"{BASE_URL}/api/process_output_queue",
-        headers=HEADERS,
-        data=json.dumps({}),
-        verify=False
-    )
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to start processing output queue: {response.json()}")
-        return None
-
-def send_question(access_token, question):
-    sio.emit('send_question', {'access_token': access_token, 'question': question})
+def send_message(access_token, message):
+    sio.emit('message', {'access_token': access_token, 'message': message})
 
 
 @sio.event
@@ -80,19 +53,21 @@ def connect():
     access_token = response['access_token'] if response else None
     if access_token:
         print(f"Access token obtained: {access_token}")
-        send_question(access_token, question='what is a Mittre Attack?')
-        send_question(access_token, question='how to secure a windows system ?')
-        start_processing_queue()
+        send_message(access_token, message='what is a Mittre Attack?')
+        send_message(access_token, message='how to secure a windows system ?')
         print_queue('queue_input')
-        start_processing_output_queue()
         print_queue('queue_output')
     else:
         print('Could not get access token. Disconnecting...')
         sio.disconnect()
 
 @sio.event
-def sending_question_status(data):
-    print(f"Received sending question status: {data}")
+def loading(data):
+    print(f"Received loading status: {data}")
+    
+@sio.event
+def error(data):
+    print(f"Received error status: {data}")
 
 @sio.event
 def response(data):

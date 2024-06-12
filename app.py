@@ -42,7 +42,7 @@ rabbitmq_handler = RabbitMQHandler(socketio)
 
 
 def validate_api_key(api_key):
-    valid_api_keys = ["example_valid_key"]
+    valid_api_keys = ["UwHtq7SkGS51u9DvKEAGM6e2E2izoCYTrgBeVNql1rpsWyfRkxSGx44q7C6YEdiiyOPR4HwFT8N9D0h7eq4HfhRx0x0LlvhP3Ps1B9ra7EfWwYUy8DkWOFwusZQFbIv2"]
     return api_key in valid_api_keys
 
 
@@ -67,7 +67,7 @@ def is_valid_access_token(access_token):
     return token is not None
 
 
-@app.route('/api/request-token', methods=['POST'])
+@app.route('/api/request_token', methods=['POST'])
 def request_token():
     data = request.json
     api_key = data.get('API_KEY')
@@ -99,41 +99,48 @@ def print_queue():
     return jsonify({'messages': messages}), 200
 
 
-@app.route('/api/process_queue', methods=['POST'])
-def process_queue():
-    rabbitmq_handler.consume_input_queue()
-    return jsonify({'status': 'processing_started'}), 200
-
-
-@app.route('/api/process_output_queue', methods=['POST'])
-def process_output_queue():
-    messages = rabbitmq_handler.consume_output_queue()
-    for message in messages:
-        socket_id = message.get('socket_id')
-        status = message.get('status')
-        answer = message.get('answer')
-        socketio.emit('response', {'status': status, 'answer': answer}, to=socket_id)
-    return jsonify({'status': 'output_processing_started'}), 200
-
-
-@socketio.on('send_question')
-def handle_send_question(data):
+@socketio.on('message')
+def handle_send_message(data):
     access_token = data.get('access_token')
-    question = data.get('question')
+    message = data.get('message')
     socket_id = request.sid
 
-    if not access_token or not question:
-        emit('sending_question_status', {'status': 'error', 'message': 'access_token and question are required'})
+    if not access_token or not message:
+        emit('error', {'status': 'error', 'message': 'access_token and message are required'})
         return
 
-    if is_valid_access_token(access_token):
-        print(f"Access token valid. Receiving question: {question} and sending status...")
-        emit('sending_question_status', {'status': 'loading', 'question': question}, to=socket_id)
-        rabbitmq_handler.send_to_queue({'socket_id': socket_id, 'access_token': access_token, 'question': question}, 'queue_input')
-    else:
-        print(f"Access token invalid. Question: {question} not sent.")
-        emit('sending_question_status', {'status': 'invalid_token', 'question': question}, to=socket_id)
+    if len(message)>1000:
+        emit('error', {'status': 'error', 'message': 'le message est trop long'})
 
+    if is_valid_access_token(access_token):
+        print(f"Access token valid. Receiving message: {message} and sending status...")
+        emit('loading', {'status': 'loading', 'message': message}, to=socket_id)
+        rabbitmq_handler.send_to_queue({'socket_id': socket_id, 'id': access_token, 'message': message}, 'queue_input')
+    else:
+        print(f"Access token invalid. message: {message} not sent.")
+        emit('error', {'status': 'invalid_token', 'message': message}, to=socket_id)
+
+
+@socketio.on('ask')
+def handle_ask(data):
+    api_key = data.get('API_KEY')
+    if not validate_api_key(api_key):
+        emit('error', {'error': 'Invalid API_KEY'})
+        return
+
+    access_token = session.get('access_token')
+    token_id = session.get('token_id')
+
+    if not access_token or not token_id:
+        access_token = generate_access_token()
+        token_id = store_token_in_db(access_token)
+        session['access_token'] = access_token
+        session['token_id'] = token_id
+
+    message = data.get('message')
+    print(f"Received message: {message}")
+
+    emit('status', {'status': 'queued', 'token_id': token_id, 'access_token': access_token})
 
 
 @socketio.on('disconnect')
@@ -147,6 +154,9 @@ def handle_disconnect():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+
+    rabbitmq_handler.consume_input_queue()
+    rabbitmq_handler.consume_output_queue()
 
     context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
