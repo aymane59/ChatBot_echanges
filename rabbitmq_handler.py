@@ -1,3 +1,4 @@
+import random
 import threading
 import pika
 import json
@@ -37,31 +38,10 @@ def close_rabbitmq_handle(channel, connection, max_retries=3):
         else:
             raise MaxAttemptsExceededError('Nombre maximal de tentatives de connexion atteint')
 
-def callback(socketio, ch, method, properties, body):
-    try:
-        json_body = json.loads(body)
-        print(f" [x] Received {json_body}")
-        socket_id = json_body.get('socket_id')
-        question = json_body.get('question')
-        answer = json_body.get('answer')
-        if socket_id and question:
-            print(f" [x] Sending question to socket {socket_id}: {question}")
-            socketio.emit('response', {'socket_id': socket_id, 'question': question}, room=socket_id)
-        elif socket_id and answer:
-            print(f" [x] Sending answer to socket {socket_id}: {answer}")
-            socketio.emit('response', {'socket_id': socket_id, 'answer': answer}, room=socket_id)
-    except Exception as e:
-        print('Erreur lors de la réception du message:', str(e))
-
-def output_consumer(socketio):
-    channel2, connection2 = get_rabbitmq_handle(connection_string=CONNEXION_URI)
-    channel2.basic_consume(queue=QUEUE_OUTPUT, auto_ack=True, on_message_callback=lambda ch, method, properties, body: callback(socketio, ch, method, properties, body))
-    print('Waiting for messages...')
-    channel2.start_consuming()
 
 class RabbitMQHandler:
 
-    def __init__(self, socketio):
+    def __init__(self, socketio=None):
         self.socketio = socketio
         try:
             self.channel, self.connection = get_rabbitmq_handle(CONNEXION_URI)
@@ -76,28 +56,85 @@ class RabbitMQHandler:
             self.channel.queue_declare(queue=QUEUE_INPUT, durable=False)
             self.channel.queue_declare(queue=QUEUE_OUTPUT, durable=False)
             print('Initialisation de la queue de messages')
+            self.purge_queue(QUEUE_INPUT)
+            self.purge_queue(QUEUE_OUTPUT)
+            print('Queues vidées')
         except Exception as e:
             print('Erreur lors de l\'initialisation de la queue de messages:', str(e))
             exit(1)
 
-        try:
-            self.consumer_thread = threading.Thread(target=output_consumer, args=(self.socketio,))
-            self.consumer_thread.start()
-        except Exception as e:
-            print('Erreur lors de la création du thread de consommation:', str(e))
-            exit(1)
-
-    def send_result(self, body: dict):
+    def send_to_queue(self, body: dict, queue_name):
         try:
             body_bytes = json.dumps(body, default=str).encode('utf-8')
             self.channel.basic_publish(exchange='',
-                                       routing_key=QUEUE_OUTPUT,
+                                       routing_key=queue_name,
                                        body=body_bytes)
         except Exception as e:
             raise SendMessageError(f'Erreur lors de l\'envoi du message: {e}')
 
+    def purge_queue(self, queue_name):
+        try:
+            self.channel.queue_purge(queue=queue_name)
+        except Exception as e:
+            print(f'Erreur lors de la purge de la queue {queue_name}: {e}')
+
+    def consume_input_queue(self):
+        while True:
+            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_INPUT, auto_ack=True)
+            if method_frame:
+                message = json.loads(body)
+                socket_id = message.get('socket_id')
+                access_token = message.get('access_token')
+                question = message.get('question')
+                print(f"Consuming message: {message}")
+
+                if socket_id and access_token and question:
+                    # Simulate processing the question and generating an answer
+                    answer = f"Processed answer for the question: {question}"
+                    status = random.choice(['SUCCESS', 'REFUSED', 'ERROR'])
+                    response = {
+                        'status': status,
+                        'answer': answer,
+                        'socket_id': socket_id
+                    }
+                    self.send_to_queue(response, QUEUE_OUTPUT)
+                else:
+                    print(f"Invalid message format: {message}")
+            else:
+                break
+
+    def consume_output_queue(self):
+        while True:
+            method_frame, header_frame, body = self.channel.basic_get(queue=QUEUE_OUTPUT, auto_ack=True)
+            if method_frame:
+                message = json.loads(body)
+                socket_id = message.get('socket_id')
+                answer = message.get('answer')
+                status = message.get('status')
+                print(f"Consuming message from output queue: {message}")
+
+                if socket_id and answer and status:
+                    response = {
+                        'status': status,
+                        'answer': answer,
+                        'socket_id': socket_id
+                    }
+                    return response
+                else:
+                    print(f"Invalid message format: {message}")
+            else:
+                break
+    def print_queue_content(self, queue_name):
+        messages = []
+        while True:
+            method_frame, header_frame, body = self.channel.basic_get(queue=queue_name, auto_ack=True)
+            if method_frame:
+                messages.append(body.decode('utf-8'))
+            else:
+                break
+        for message in messages:
+            print(f"Message in {queue_name}: {message}")
+
     def dispose(self):
         print('Fermeture de la connexion à RabbitMQ')
         close_rabbitmq_handle(self.channel, self.connection)
-        self.consumer_thread.join()
-        print('Thread de consommation fermé')

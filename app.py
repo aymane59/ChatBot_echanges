@@ -7,6 +7,7 @@ import ssl
 from config import Config
 from models import db, SessionToken
 from flask_talisman import Talisman
+
 from rabbitmq_handler import RabbitMQHandler
 
 app = Flask(__name__)
@@ -71,39 +72,56 @@ def request_token():
     data = request.json
     api_key = data.get('API_KEY')
 
-    if not api_key:
-        return jsonify({'error': 'API_KEY is required'}), 400
-
-    if not validate_api_key(api_key):
-        return jsonify({'error': 'Invalid API_KEY'}), 401
+    if not api_key or not validate_api_key(api_key):
+        return jsonify({'error': 'Invalid or missing API_KEY'}), 401
 
     access_token = generate_access_token()
     token_id = store_token_in_db(access_token)
     session['access_token'] = access_token
     session['token_id'] = token_id
+
     return jsonify({'access_token': access_token}), 200
 
 
-@app.route('/api/socket/send_question', methods=['POST'])
-def send_question():
+@app.route('/api/print_queue', methods=['POST'])
+def print_queue():
     data = request.json
+    queue_name = data.get('queue_name')
+    print(f"Contents of the queue : {queue_name}")
+    messages = []
+    while True:
+        method_frame, header_frame, body = rabbitmq_handler.channel.basic_get(queue=queue_name, auto_ack=True)
+        if method_frame:
+            messages.append(body.decode('utf-8'))
+        else:
+            break
+    print(messages)
+    return jsonify({'messages': messages}), 200
+
+
+@app.route('/api/process_queue', methods=['POST'])
+def process_queue():
+    rabbitmq_handler.consume_input_queue()
+    return jsonify({'status': 'processing_started'}), 200
+
+
+@socketio.on('send_question')
+def handle_send_question(data):
     access_token = data.get('access_token')
     question = data.get('question')
-    socket_id = data.get('socket_id')
+    socket_id = request.sid
 
-    if not access_token or not question or not socket_id:
-        return jsonify({'status': 'error', 'message': 'access_token, question, and socket_id are required'}), 400
+    if not access_token or not question:
+        emit('sending_question_status', {'status': 'error', 'message': 'access_token and question are required'})
+        return
 
     if is_valid_access_token(access_token):
-        # Access token est valide
-        print(f"Access token valid. Sending question: {question}")
-        # Envoyer la question à la queue pour traitement
-        rabbitmq_handler.send_result({'socket_id': socket_id, 'access_token': access_token, 'question': question})
-        return jsonify({'status': 'loading', 'question': question}), 200
+        print(f"Access token valid. Receiving question: {question} and sending status...")
+        emit('sending_question_status', {'status': 'loading', 'question': question}, to=socket_id)
+        rabbitmq_handler.send_to_queue({'socket_id': socket_id, 'access_token': access_token, 'question': question}, 'queue_input')
     else:
-        # Access token invalide
         print(f"Access token invalid. Question: {question} not sent.")
-        return jsonify({'status': 'invalid_token', 'question': question}), 401
+        emit('sending_question_status', {'status': 'invalid_token', 'question': question}, to=socket_id)
 
 
 @socketio.on('ask')
@@ -113,7 +131,7 @@ def handle_ask(data):
         emit('error', {'error': 'Invalid API_KEY'})
         return
 
-    access_token = data.get('access_token')
+    access_token = session.get('access_token')
     token_id = session.get('token_id')
 
     if not access_token or not token_id:
@@ -124,24 +142,16 @@ def handle_ask(data):
 
     question = data.get('question')
     print(f"Received question: {question}")
-    print(f"Generated access token: {access_token} with ID: {token_id}")
 
-    # Utiliser `sid` pour obtenir l'ID de session dans le contexte SocketIO
-    rabbitmq_handler.send_result({'socket_id': request.sid, 'access_token': access_token, 'question': question})
-    emit('status', {'status': 'queued', 'token_id': token_id})
+    emit('status', {'status': 'queued', 'token_id': token_id, 'access_token': access_token})
 
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    with app.app_context():
-        access_token = session.get('access_token')
-        if access_token:
-            delete_token_from_db(access_token)
-            print(f"Deleted access token: {access_token}")
-
-
-def post_to_queue(question, access_token):
-    print(f"Question mise en file d'attente : {question} avec le token : {access_token}")
+    access_token = session.get('access_token')
+    if access_token:
+        delete_token_from_db(access_token)
+        print(f"Deleted access token: {access_token}")
 
 
 if __name__ == '__main__':

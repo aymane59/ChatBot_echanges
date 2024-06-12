@@ -2,55 +2,78 @@ import requests
 import json
 import socketio
 
-sio = socketio.Client(ssl_verify=False)  # à changer une fois le certificat valable
+from rabbitmq_handler import RabbitMQHandler
+
+sio = socketio.Client(ssl_verify=False)
 
 API_KEY = "example_valid_key"
 BASE_URL = "https://localhost:5000"
 HEADERS = {'Content-Type': 'application/json'}
-socket_id = None
+
+rabbitmq_handler = RabbitMQHandler()
 
 def get_access_token(api_key):
     response = requests.post(
         f"{BASE_URL}/api/request-token",
         headers=HEADERS,
         data=json.dumps({"API_KEY": api_key}),
-        verify=False  # désactiver la vérification SSL pour les tests
+        verify=False
     )
     if response.status_code == 200:
-        return response.json().get('access_token')
+        return response.json()
     else:
         print(f"Failed to get access token: {response.json()}")
         return None
 
-def send_question(access_token, question, socket_id):
+def print_queue(queue_name):
     response = requests.post(
-        f"{BASE_URL}/api/socket/send_question",
+        f"{BASE_URL}/api/print_queue",
         headers=HEADERS,
-        data=json.dumps({"access_token": access_token, "question": question, "socket_id": socket_id}),
-        verify=False  # désactiver la vérification SSL pour les tests
+        data=json.dumps({"queue_name": queue_name}),
+        verify=False
     )
     if response.status_code == 200:
-        response_data = response.json()
-        if response_data.get('status') == 'loading':
-            print(f"Question sent: {question}")
-            print(f"Received response: {response_data}")
-        else:
-            print(f"Question not sent. Status: {response_data.get('status')}")
+        return response.json()
     else:
-        print(f"Failed to send question: {response.json()}")
+        print(f"Failed to get messages: {response.json()}")
+        return None
+
+def start_processing_queue():
+    response = requests.post(
+        f"{BASE_URL}/api/process_queue",
+        headers=HEADERS,
+        data=json.dumps({}),
+        verify=False
+    )
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print(f"Failed to start processing queue: {response.json()}")
+        return None
+
+def send_question(access_token, question):
+    sio.emit('send_question', {'access_token': access_token, 'question': question})
+
 
 @sio.event
 def connect():
-    global socket_id
     print('Connection established')
-    socket_id = sio.sid
-    access_token = get_access_token(API_KEY)
+    response = get_access_token(API_KEY)
+    access_token = response['access_token'] if response else None
     if access_token:
         print(f"Access token obtained: {access_token}")
-        send_question(access_token, "What is Fishing?", socket_id)
+        send_question(access_token, question='what is a Mittre Attack?')
+        send_question(access_token, question='how to secure a windows system ?')
+        start_processing_queue()
+        print_queue('queue_input')
+        print_queue('queue_output')
     else:
         print('Could not get access token. Disconnecting...')
         sio.disconnect()
+
+@sio.event
+def sending_question_status(data):
+    print(f"Received sending question status: {data}")
 
 @sio.event
 def disconnect():
