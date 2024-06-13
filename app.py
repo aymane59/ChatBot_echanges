@@ -1,7 +1,7 @@
 from flask import Flask, session, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
-from flask_sqlalchemy import SQLAlchemy
 from flask_session import Session
+from flask import render_template
 import os
 import ssl
 from config import Config
@@ -12,24 +12,24 @@ from rabbitmq_handler import RabbitMQHandler
 
 app = Flask(__name__)
 # Configure Talisman for security headers
-talisman = Talisman(
-    app,
-    content_security_policy={
-        'default-src': [
-            "'self'"
-        ],
-        'script-src': [
-            "'self'",
-            "'unsafe-inline'",
-            "'unsafe-eval'"
-        ]
-    },
-    force_https=True,
-    session_cookie_secure=True,
-    session_cookie_http_only=True,
-    content_security_policy_nonce_in=['script-src'],
-    referrer_policy='strict-origin-when-cross-origin'
-)
+# talisman = Talisman(
+#     app,
+#     content_security_policy={
+#         'default-src': [
+#             "'self'"
+#         ],
+#         'script-src': [
+#             "'self'",
+#             "'unsafe-inline'",
+#             "'unsafe-eval'"
+#         ]
+#     },
+#     force_https=True,
+#     session_cookie_secure=True,
+#     session_cookie_http_only=True,
+#     content_security_policy_nonce_in=['script-src'],
+#     referrer_policy='strict-origin-when-cross-origin'
+# )
 
 app.config.from_object(Config)
 
@@ -65,6 +65,11 @@ def delete_token_from_db(access_token):
 def is_valid_access_token(access_token):
     token = SessionToken.query.filter_by(access_token=access_token).first()
     return token is not None
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
 
 
 @app.route('/api/request_token', methods=['POST'])
@@ -109,7 +114,7 @@ def handle_send_message(data):
         emit('error', {'status': 'error', 'message': 'access_token and message are required'})
         return
 
-    if len(message)>1000:
+    if len(message) > 1000:
         emit('error', {'status': 'error', 'message': 'le message est trop long'})
 
     if is_valid_access_token(access_token):
@@ -151,16 +156,12 @@ def handle_disconnect():
         print(f"Deleted access token: {access_token}")
 
 
-if __name__ == '__main__':
+def main():
     with app.app_context():
         db.create_all()
 
-    rabbitmq_handler.consume_input_queue()
     rabbitmq_handler.consume_output_queue()
-
-    context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    context.load_cert_chain(certfile='cert.pem', keyfile='key.pem')
-
     print("Starting server with HTTPS...")
 
-    socketio.run(app, host='0.0.0.0', port=5000, ssl_context=context, allow_unsafe_werkzeug=True)
+
+main()
