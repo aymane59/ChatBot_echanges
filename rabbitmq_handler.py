@@ -13,6 +13,11 @@ CONNEXION_URI = 'localhost'
 
 
 def update_message_counter(access_token):
+    """
+    appel de l'endpoint secret qui remet le nbr de message d'un client dans la queue à 0
+    :param access_token:
+    :return:
+    """
     response = requests.post(
         f"http://127.0.0.1:8000/api/local/7e467523-1ef8-4aee-b01f-0cdddc638e80",
         headers={'Content-Type': 'application/json'},
@@ -24,6 +29,12 @@ def update_message_counter(access_token):
 
 
 def get_rabbitmq_handle(connection_string, max_retries=3):
+    """
+    methode qui sert à initier la connection a rabbitMQ
+    :param connection_string:
+    :param max_retries:
+    :return:
+    """
     try:
         connection = pika.BlockingConnection(pika.ConnectionParameters(connection_string))
         channel = connection.channel()
@@ -39,6 +50,13 @@ def get_rabbitmq_handle(connection_string, max_retries=3):
 
 
 def close_rabbitmq_handle(channel, connection, max_retries=3):
+    """
+    Fermeture de la connexion à rabbitMQ
+    :param channel:
+    :param connection:
+    :param max_retries:
+    :return:
+    """
     try:
         channel.close()
         connection.close()
@@ -77,6 +95,12 @@ class RabbitMQHandler:
             exit(1)
 
     def send_to_queue(self, body: dict, queue_name):
+        """
+        Methode qui sert à empiler un message (question ou reponse ) dans la file donnée en paramètre
+        :param body:
+        :param queue_name:
+        :return:
+        """
         try:
             body_bytes = json.dumps(body, default=str).encode('utf-8')
             self.channel.basic_publish(exchange='',
@@ -93,6 +117,14 @@ class RabbitMQHandler:
 
     def consume_output_queue(self):
         def callback(ch, method, properties, body):
+            """
+            Methode callback qui est appelée à chaque nouvelle réponse mise par l'IA dans la queue output
+            :param ch:
+            :param method:
+            :param properties:
+            :param body:
+            :return:
+            """
             data = json.loads(body)
             socket_id = data.get('socket_id')
             status = data.get('status')
@@ -100,9 +132,8 @@ class RabbitMQHandler:
             access_token = data.get('access_token')
             print(f"Consuming message from output queue: {data}")
 
-            # TODO: enlever ce hotfix
             if True or (socket_id and answer and status):
-                self.socketio.emit(status, {'status': status, status: answer}, room=socket_id)
+                self.socketio.emit(status, {'status': status, status: answer}, room=socket_id) # envoie du mot généré par l'IA au client (status : message pour le premier mot, word pour les autres)
                 if status == 'message':
                     try:
                         update_message_counter(access_token)
@@ -112,7 +143,7 @@ class RabbitMQHandler:
                 print(f"Invalid message format: {data}")
 
         self.channel.basic_consume(queue=QUEUE_OUTPUT, on_message_callback=callback, auto_ack=True)
-        threading.Thread(target=self.channel.start_consuming).start()
+        threading.Thread(target=self.channel.start_consuming).start() # On lance le Thread qui tourne en arriere plan afin de consommer le contenu de la queue
 
     def dispose(self):
         print('Fermeture de la connexion à RabbitMQ')
