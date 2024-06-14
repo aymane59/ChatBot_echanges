@@ -11,25 +11,6 @@ from flask_talisman import Talisman
 from rabbitmq_handler import RabbitMQHandler
 
 app = Flask(__name__)
-# Configure Talisman for security headers
-# talisman = Talisman(
-#     app,
-#     content_security_policy={
-#         'default-src': [
-#             "'self'"
-#         ],
-#         'script-src': [
-#             "'self'",
-#             "'unsafe-inline'",
-#             "'unsafe-eval'"
-#         ]
-#     },
-#     force_https=True,
-#     session_cookie_secure=True,
-#     session_cookie_http_only=True,
-#     content_security_policy_nonce_in=['script-src'],
-#     referrer_policy='strict-origin-when-cross-origin'
-# )
 
 app.config.from_object(Config)
 
@@ -67,6 +48,33 @@ def is_valid_access_token(access_token):
     return token is not None
 
 
+def delete_token_from_db(access_token):
+    SessionToken.query.filter_by(access_token=access_token).delete()
+    db.session.commit()
+
+
+def drop_session_db():
+    db.drop_all()
+
+
+def get_message_counter(access_token):
+    token = SessionToken.query.filter_by(access_token=access_token).first()
+    if token:
+        return token.compteur_messages
+    else:
+        return None
+
+
+def update_message_counter(access_token, new_counter_value):
+    token = SessionToken.query.filter_by(access_token=access_token).first()
+    if token:
+        token.compteur_messages = new_counter_value
+        db.session.commit()
+        return True
+    else:
+        return False
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -86,6 +94,25 @@ def request_token():
     session['token_id'] = token_id
 
     return jsonify({'access_token': access_token}), 200
+
+
+@app.route('/api/local/7e467523-1ef8-4aee-b01f-0cdddc638e80', methods=['POST'])
+def update_mutex():
+    if request.remote_addr not in ('127.0.0.1', '::1'):
+        return jsonify({'error': 'Forbiden'}), 403
+
+    data = request.json
+    access_token = data.get('access_token')
+
+    if not access_token:
+        return jsonify({'error': 'Invalid format'}), 401
+
+    try:
+        update_message_counter(access_token, 0)
+        return jsonify({'status': 'success'}), 200
+
+    except Exception as e:
+        return jsonify({'error': 'error'}), 401
 
 
 @app.route('/api/print_queue', methods=['POST'])
@@ -114,16 +141,22 @@ def handle_send_message(data):
         emit('error', {'status': 'error', 'message': 'access_token and message are required'})
         return
 
-    if len(message) > 1000:
-        emit('error', {'status': 'error', 'message': 'le message est trop long'})
+    compteur_messages = get_message_counter(access_token)
 
-    if is_valid_access_token(access_token):
-        print(f"Access token valid. Receiving message: {message} and sending status...")
-        emit('loading', {'status': 'loading', 'message': message}, to=socket_id)
-        rabbitmq_handler.send_to_queue({'socket_id': socket_id, 'id': access_token, 'message': message}, 'queue_input')
+    if compteur_messages == 0:
+        if len(message) > 1000:
+            emit('error', {'status': 'error', 'message': 'le message est trop long'})
+
+        if is_valid_access_token(access_token):
+            print(f"Access token valid. Receiving message: {message} and sending status...")
+            update_message_counter(access_token, 1)
+            emit('loading', {'status': 'loading', 'message': message}, to=socket_id)
+            rabbitmq_handler.send_to_queue({'socket_id': socket_id, 'id': access_token, 'message': message}, 'queue_input')
+        else:
+            print(f"Access token invalid. message: {message} not sent.")
+            emit('error', {'status': 'invalid_token', 'message': message}, to=socket_id)
     else:
-        print(f"Access token invalid. message: {message} not sent.")
-        emit('error', {'status': 'invalid_token', 'message': message}, to=socket_id)
+        emit('error', {'status': 'error', 'message': 'Vous avez déjà un message dans la queue'})
 
 
 @socketio.on('ask')
@@ -155,12 +188,12 @@ def handle_disconnect():
         delete_token_from_db(access_token)
         print(f"Deleted access token: {access_token}")
 
-
 def main():
     with app.app_context():
         db.create_all()
 
     rabbitmq_handler.consume_output_queue()
+
     print("Starting server with HTTPS...")
 
 

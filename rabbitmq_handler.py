@@ -3,13 +3,24 @@ import threading
 import pika
 import json
 from time import sleep
-
+import requests
 
 from exceptions import *
 
 QUEUE_INPUT = 'queue_input'
 QUEUE_OUTPUT = 'queue_output'
 CONNEXION_URI = 'localhost'
+
+
+def update_message_counter(access_token):
+    response = requests.post(
+        f"http://127.0.0.1:8000/api/local/7e467523-1ef8-4aee-b01f-0cdddc638e80",
+        headers={'Content-Type': 'application/json'},
+        data=json.dumps({"access_token": access_token}),
+        verify=False
+    )
+    if response.status_code != 200:
+        raise Exception
 
 
 def get_rabbitmq_handle(connection_string, max_retries=3):
@@ -25,6 +36,7 @@ def get_rabbitmq_handle(connection_string, max_retries=3):
             return get_rabbitmq_handle(connection_string, max_retries - 1)
         else:
             raise MaxAttemptsExceededError('Nombre maximal de tentatives de connexion atteint')
+
 
 def close_rabbitmq_handle(channel, connection, max_retries=3):
     try:
@@ -85,11 +97,17 @@ class RabbitMQHandler:
             socket_id = data.get('socket_id')
             status = data.get('status')
             answer = data.get(status)
+            access_token = data.get('access_token')
             print(f"Consuming message from output queue: {data}")
 
             # TODO: enlever ce hotfix
             if True or (socket_id and answer and status):
                 self.socketio.emit(status, {'status': status, status: answer}, room=socket_id)
+                if status == 'message':
+                    try:
+                        update_message_counter(access_token)
+                    except Exception as e:
+                        print(f"Error updating message counter: {e}")
             else:
                 print(f"Invalid message format: {data}")
 
